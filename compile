@@ -2,6 +2,9 @@ EMCC_DEBUG=1 &&
 emcc \
 --memoryprofiler \
 -sEXPORT_ES6 \
+-sMODULARIZE \
+-fsanitize=address \
+-sEXPORTED_RUNTIME_METHODS=wasmMemory \
 -sALLOW_MEMORY_GROWTH \
 -sENVIRONMENT=web \
 -g \
@@ -12,6 +15,5 @@ emcc \
 -L/Users/tgross/Documents/GitHub/libarchive/dist/lib \
 -larchive \
 -lembind \
---emit-tsd lib.d.ts \
 ./lib/lib.cpp \
 -o ./static/lib.debug.js
