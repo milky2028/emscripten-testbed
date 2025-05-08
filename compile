@@ -1,0 +1,17 @@
+EMCC_DEBUG=1 &&
+emcc \
+--memoryprofiler \
+-sEXPORT_ES6 \
+-sALLOW_MEMORY_GROWTH \
+-sENVIRONMENT=web \
+-g \
+-gsource-map \
+-O0 \
+-std=c++20 \
+-I/Users/tgross/Documents/GitHub/libarchive/dist/include \
+-L/Users/tgross/Documents/GitHub/libarchive/dist/lib \
+-larchive \
+-lembind \
+--emit-tsd lib.d.ts \
+./lib/lib.cpp \
+-o ./static/lib.debug.js
