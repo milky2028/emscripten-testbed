@@ -20,7 +20,7 @@
 			const module = await init({
 				wasmMemory: new WebAssembly.Memory({
 					shared: true,
-          initial: (0.1 * ONE_GIBIBYTE) / WASM_BLOCK_SIZE,
+          initial: (2 * ONE_GIBIBYTE) / WASM_BLOCK_SIZE,
 					maximum: (4 * ONE_GIBIBYTE) / WASM_BLOCK_SIZE
 				})
 			});
