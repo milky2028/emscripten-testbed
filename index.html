@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Threaded Memory Reporting</title>
+	</head>
+	<body>
+		<h1>Threaded Memory Leak Testbed</h1>
+		<button id="leak">Create Memory Leak</button>
+		<button id="threaded-leak">Create Threaded Memory Leak</button>
+		<script type="module">
+			const ONE_GIBIBYTE = 1024 * 1024 * 1024;
+			const WASM_BLOCK_SIZE = 65536;
+
+			const { default: init } = await import('/lib.js');
+			const module = await init({
+				wasmMemory: new WebAssembly.Memory({
+					shared: true,
+					initial: (0.25 * ONE_GIBIBYTE) / WASM_BLOCK_SIZE,
+					maximum: (4 * ONE_GIBIBYTE) / WASM_BLOCK_SIZE
+				})
+			});
+
+			const leakBtn = document.querySelector('#leak');
+			const threadedLeakBtn = document.querySelector('#threaded-leak');
+
+			leakBtn.addEventListener('click', () => {
+				console.log('leak');
+			});
+
+			threadedLeakBtn.addEventListener('click', () => {
+				console.log('thread leak');
+			});
+		</script>
+	</body>
+</html>

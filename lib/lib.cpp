@@ -1,19 +1,19 @@
-#include <memory>
+#include <thread>
 #include <emscripten/bind.h>
 
-void create_memory() {
-  for (int i = 0; i < 10000; ++i) {
-    std::shared_ptr<char> p{new char[10000000]};
-  }
-}
+const int ONE_GIBIBYTE = 1024 * 1024 * 1024;
 
 void create_memory_leak() {
-  new char[10000000];
+  new char[0.25 * ONE_GIBIBYTE];
+}
+
+void create_threaded_memory_leak() {
+  std::thread([] {
+    create_memory_leak();
+  });
 }
 
 EMSCRIPTEN_BINDINGS(module) {
-  emscripten::function("create_memory", &create_memory);
   emscripten::function("create_memory_leak", &create_memory_leak);
-  emscripten::function("do_leak_check_fatal", &__lsan_do_leak_check);
-  emscripten::function("do_leak_check_recoverable", &__lsan_do_recoverable_leak_check);
+  emscripten::function("create_threaded_memory_leak", &create_threaded_memory_leak);
 }
