@@ -22,7 +22,7 @@ async function handler(req: Request): Promise<Response> {
 	}
 
 	if (path.includes('index') || path === '/') {
-		return new Response(await Deno.readFile('./index.html'), {
+		return new Response(await Deno.readFile('./static/index.html'), {
 			...ok,
 			headers: { ...isolated }
 		});
