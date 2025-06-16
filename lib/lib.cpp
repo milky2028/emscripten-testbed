@@ -1,16 +1,22 @@
 #include <thread>
+#include <cstdio>
+#include <vector>
 #include <emscripten/bind.h>
 
 const int ONE_GIBIBYTE = 1024 * 1024 * 1024;
+static std::vector<char*> leaks;
 
 void create_memory_leak() {
-  new char[0.25 * ONE_GIBIBYTE];
+  printf("created memory leak\n");
+  char* leak = new char[0.1 * ONE_GIBIBYTE];
+  leaks.push_back(leak);
 }
 
 void create_threaded_memory_leak() {
+  printf("created threaded memory leak\n");
   std::thread([] {
     create_memory_leak();
-  });
+  }).detach();
 }
 
 EMSCRIPTEN_BINDINGS(module) {

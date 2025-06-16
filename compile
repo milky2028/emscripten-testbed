@@ -1,5 +1,6 @@
 EMCC_DEBUG=1 &&
 emcc \
+--memoryprofiler \
 -sEXPORT_ES6 \
 -sMODULARIZE \
 -sMAXIMUM_MEMORY=4GB \

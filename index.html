@@ -17,7 +17,7 @@
 			const module = await init({
 				wasmMemory: new WebAssembly.Memory({
 					shared: true,
-					initial: (0.25 * ONE_GIBIBYTE) / WASM_BLOCK_SIZE,
+          initial: (0.1 * ONE_GIBIBYTE) / WASM_BLOCK_SIZE,
 					maximum: (4 * ONE_GIBIBYTE) / WASM_BLOCK_SIZE
 				})
 			});
@@ -26,11 +26,11 @@
 			const threadedLeakBtn = document.querySelector('#threaded-leak');
 
 			leakBtn.addEventListener('click', () => {
-				console.log('leak');
+				module.create_memory_leak();
 			});
 
 			threadedLeakBtn.addEventListener('click', () => {
-				console.log('thread leak');
+        module.create_threaded_memory_leak();
 			});
 		</script>
 	</body>
