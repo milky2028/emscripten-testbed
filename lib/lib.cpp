@@ -14,9 +14,11 @@ void create_memory_leak() {
 
 void create_threaded_memory_leak() {
   printf("created threaded memory leak\n");
-  std::thread([] {
-    create_memory_leak();
-  }).detach();
+  for (int i = 0; i <= 10; ++i) {
+    std::thread([] {
+      create_memory_leak();
+    }).detach();
+  }
 }
 
 EMSCRIPTEN_BINDINGS(module) {
