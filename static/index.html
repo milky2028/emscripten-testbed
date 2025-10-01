@@ -1,4 +1,4 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 	<head>
 		<meta charset="UTF-8" />
@@ -6,35 +6,70 @@
 		<title>Threaded Memory Reporting</title>
 	</head>
 	<body>
-		<h1>Threaded Memory Leak Testbed</h1>
+		<!-- <h1>Threaded Memory Leak Testbed</h1>
 		<p><a href="https://github.com/milky2028/emscripten-testbed">GitHub Repo</a></p>
 		<button id="leak">Create 100MB memory leak</button>
 		<button id="threaded-leak">Create 100MB memory leak simultaneously across 10 threads</button>
 		<br />
-		<br />
+		<br /> -->
+		<input type="file" value="Import Image" />
 		<script type="module">
-			const ONE_GIBIBYTE = 1024 * 1024 * 1024;
-			const WASM_BLOCK_SIZE = 65536;
+			// const ONE_GIBIBYTE = 1024 * 1024 * 1024;
+			// const WASM_BLOCK_SIZE = 65536;
 
-			const { default: init } = await import('/lib.js');
-			const module = await init({
-				wasmMemory: new WebAssembly.Memory({
-					shared: true,
-          initial: (0.1 * ONE_GIBIBYTE) / WASM_BLOCK_SIZE,
-					maximum: (4 * ONE_GIBIBYTE) / WASM_BLOCK_SIZE
-				})
-			});
+			// const { default: init } = await import('/lib.js');
+			// const module = await init({
+			// 	wasmMemory: new WebAssembly.Memory({
+			// 		shared: true,
+			//     initial: (0.1 * ONE_GIBIBYTE) / WASM_BLOCK_SIZE,
+			// 		maximum: (4 * ONE_GIBIBYTE) / WASM_BLOCK_SIZE
+			// 	})
+			// });
 
-			const leakBtn = document.querySelector('#leak');
-			const threadedLeakBtn = document.querySelector('#threaded-leak');
+			// const leakBtn = document.querySelector('#leak');
+			// const threadedLeakBtn = document.querySelector('#threaded-leak');
 
-			leakBtn.addEventListener('click', () => {
-				module.create_memory_leak();
-			});
+			// leakBtn.addEventListener('click', () => {
+			// 	module.create_memory_leak();
+			// });
 
-			threadedLeakBtn.addEventListener('click', () => {
-        module.create_threaded_memory_leak();
-			});
+			// threadedLeakBtn.addEventListener('click', () => {
+			//   module.create_threaded_memory_leak();
+			// });
+
+			// console.log(module.is_web_gpu_capable())
+
+			// const btn = document.querySelector('input');
+			// btn.addEventListener('change', async (event) => {
+			// 	const file = event.target.files[0];
+
+			// 	const [module, buffer] = await Promise.all([
+			// 		await import('/lib.js').then(({ default: init }) => init()),
+			// 		new Uint8Array(await file.arrayBuffer())
+			// 	]);
+
+			// 	console.log(module);
+
+			// 	const start2 = performance.now();
+			// 	const ptr = module._malloc(buffer.byteLength);
+			// 	module.HEAPU8.set(buffer, ptr);
+			// 	const end2 = performance.now();
+			// 	// module._free(ptr);
+
+			// 	const start = performance.now();
+			// 	const ptr2 = module.write_js_buffer_to_wasm_memory(buffer);
+			// 	const end = performance.now();
+			// 	// module._free(ptr2);
+
+			// 	console.log('time to copy buffer from C++', end - start);
+			// 	console.log('time to write buffer with JS', end2 - start2);
+			// });
+
+			// const module = await import('/lib.js').then(({ default: init }) => init());
+			// console.log(module.access_session_storage());
+
+			const module = await import('/lib.js').then(({ default: init }) => init());
+			console.log(module.put_data_in_buffer());
 		</script>
 	</body>
 </html>

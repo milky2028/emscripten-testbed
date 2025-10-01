@@ -5,9 +5,11 @@ emcc \
 -sMODULARIZE \
 -sMAXIMUM_MEMORY=4GB \
 -sALLOW_MEMORY_GROWTH \
+-sINITIAL_MEMORY=3GB \
 -sPTHREAD_POOL_SIZE=navigator.hardwareConcurrency \
 -sALLOW_MEMORY_GROWTH \
 -sENVIRONMENT=web,worker \
+-sEXPORTED_FUNCTIONS="[_malloc, _free]" \
 -pthread \
 -Oz \
 -std=c++20 \
