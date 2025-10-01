@@ -11,8 +11,8 @@
 			// const worker = new Worker('/worker.js', { type: 'module' });
 
 			const module = await import('/lib.js').then(({ default: init }) => init());
-			console.log(module.get_from_main_thread());
-			console.log(module.get_from_thread());
+			module.get_from_main_thread();
+			module.get_from_thread();
 		</script>
 	</body>
 </html>
