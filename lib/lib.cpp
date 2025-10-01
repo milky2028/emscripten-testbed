@@ -22,14 +22,13 @@ struct SharedContext {
 };
 
 std::string get_item_from_session_storage(const std::string& key) {
-  std::promise<std::string> promise;
-  std::future<std::string> future = promise.get_future();
-
   auto session_storage = emscripten::val::global("sessionStorage");
   if (session_storage != emscripten::val::undefined()) {
-    promise.set_value(get_stored_string(session_storage, key));
-    return future.get();
+    return get_stored_string(session_storage, key);
   }
+
+  std::promise<std::string> promise;
+  std::future<std::string> future = promise.get_future();
 
   SharedContext* ctx = new SharedContext{std::move(key), std::move(promise)};
   emscripten_async_run_in_main_runtime_thread(EM_FUNC_SIG_VI, static_cast<void(*)(SharedContext*)>([] (auto raw_ctx) {
