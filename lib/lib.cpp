@@ -7,7 +7,7 @@
 #include <emscripten/threading.h>
 #include <future>
 
-std::string get_value(emscripten::val storage, const std::string& key) {
+std::string get_stored_string(const emscripten::val& storage, const std::string& key) {
   auto result = storage.call<emscripten::val>("getItem", key);
   if (result == emscripten::val::null()) {
     return {};
@@ -27,14 +27,14 @@ std::string get_item_from_session_storage(const std::string& key) {
 
   auto session_storage = emscripten::val::global("sessionStorage");
   if (session_storage != emscripten::val::undefined()) {
-    promise.set_value(get_value(session_storage, key));
+    promise.set_value(get_stored_string(session_storage, key));
     return future.get();
   }
 
   SharedContext* ctx = new SharedContext{std::move(key), std::move(promise)};
   emscripten_async_run_in_main_runtime_thread(EM_FUNC_SIG_VI, static_cast<void(*)(SharedContext*)>([] (auto raw_ctx) {
     auto session_storage = emscripten::val::global("sessionStorage");
-    raw_ctx->promise.set_value(get_value(session_storage, raw_ctx->key));
+    raw_ctx->promise.set_value(get_stored_string(session_storage, raw_ctx->key));
 
     delete raw_ctx;
   }), ctx);
