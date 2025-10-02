@@ -13,10 +13,6 @@ struct Stuff {
   int s3;
 };
 
-void takes_class(Stuff stuff) {
-  printf("log stuff: %s\n", stuff.s1.c_str());
-}
-
 void takes_class_const_ref(const Stuff& stuff) {
   printf("log stuff: %s\n", stuff.s1.c_str());
 }
@@ -52,13 +48,11 @@ std::string get_item_from_session_storage(const std::string& key) {
   std::promise<std::string> promise;
   std::future<std::string> future = promise.get_future();
 
-  SharedContext* ctx = new SharedContext{std::move(key), std::move(promise)};
-  emscripten_async_run_in_main_runtime_thread(EM_FUNC_SIG_VI, static_cast<void(*)(SharedContext*)>([] (auto raw_ctx) {
+  auto ctx = std::make_unique<SharedContext>(std::move(key), std::move(promise));
+  emscripten_async_run_in_main_runtime_thread(EM_FUNC_SIG_VI, static_cast<void(*)(std::unique_ptr<SharedContext>)>([] (auto raw_ctx) {
     auto session_storage = emscripten::val::global("sessionStorage");
     raw_ctx->promise.set_value(get_stored_string(session_storage, raw_ctx->key));
-
-    delete raw_ctx;
-  }), ctx);
+  }), ctx.release());
 
   return future.get();
 }
@@ -76,10 +70,14 @@ void get_from_thread() {
 }
 
 EMSCRIPTEN_BINDINGS(module) {
+  emscripten::value_object<Stuff>("Stuff")
+    .field("s1", &Stuff::s1)
+    .field("s2", &Stuff::s2)
+    .field("s3", &Stuff::s3);
+
   emscripten::function("get_from_main_thread", &get_from_main_thread);
   emscripten::function("get_from_thread", &get_from_thread);
   emscripten::function("fn_takes_string", &fn_takes_string);
   emscripten::function("fn_takes_const_string_ref", &fn_takes_const_string_ref);
-  emscripten::function("takes_class", &takes_class);
   emscripten::function("takes_class_const_ref", &takes_class_const_ref);
 }

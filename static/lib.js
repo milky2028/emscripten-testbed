@@ -1530,42 +1530,25 @@ var __abort_js = () => {
   abort("");
 };
 
-function __embind_register_bigint(primitiveType, name, size, minRange, maxRange) {
-  primitiveType >>>= 0;
-  name >>>= 0;
-  size >>>= 0;
+var structRegistrations = {};
+
+var runDestructors = destructors => {
+  while (destructors.length) {
+    var ptr = destructors.pop();
+    var del = destructors.pop();
+    del(ptr);
+  }
+};
+
+/** @suppress {globalThis} */ function readPointer(pointer) {
+  return this["fromWireType"](GROWABLE_HEAP_U32()[((pointer) >>> 2) >>> 0]);
 }
-
-var embind_init_charCodes = () => {
-  var codes = new Array(256);
-  for (var i = 0; i < 256; ++i) {
-    codes[i] = String.fromCharCode(i);
-  }
-  embind_charCodes = codes;
-};
-
-var embind_charCodes;
-
-var readLatin1String = ptr => {
-  var ret = "";
-  var c = ptr;
-  while (GROWABLE_HEAP_U8()[c >>> 0]) {
-    ret += embind_charCodes[GROWABLE_HEAP_U8()[c++ >>> 0]];
-  }
-  return ret;
-};
 
 var awaitingDependencies = {};
 
 var registeredTypes = {};
 
 var typeDependencies = {};
-
-var BindingError;
-
-var throwBindingError = message => {
-  throw new BindingError(message);
-};
 
 var InternalError;
 
@@ -1609,6 +1592,96 @@ var whenDependentTypesAreResolved = (myTypes, dependentTypes, getTypeConverters)
   if (0 === unregisteredTypes.length) {
     onComplete(typeConverters);
   }
+};
+
+var __embind_finalize_value_object = function(structType) {
+  structType >>>= 0;
+  var reg = structRegistrations[structType];
+  delete structRegistrations[structType];
+  var rawConstructor = reg.rawConstructor;
+  var rawDestructor = reg.rawDestructor;
+  var fieldRecords = reg.fields;
+  var fieldTypes = fieldRecords.map(field => field.getterReturnType).concat(fieldRecords.map(field => field.setterArgumentType));
+  whenDependentTypesAreResolved([ structType ], fieldTypes, fieldTypes => {
+    var fields = {};
+    fieldRecords.forEach((field, i) => {
+      var fieldName = field.fieldName;
+      var getterReturnType = fieldTypes[i];
+      var getter = field.getter;
+      var getterContext = field.getterContext;
+      var setterArgumentType = fieldTypes[i + fieldRecords.length];
+      var setter = field.setter;
+      var setterContext = field.setterContext;
+      fields[fieldName] = {
+        read: ptr => getterReturnType["fromWireType"](getter(getterContext, ptr)),
+        write: (ptr, o) => {
+          var destructors = [];
+          setter(setterContext, ptr, setterArgumentType["toWireType"](destructors, o));
+          runDestructors(destructors);
+        }
+      };
+    });
+    return [ {
+      name: reg.name,
+      "fromWireType": ptr => {
+        var rv = {};
+        for (var i in fields) {
+          rv[i] = fields[i].read(ptr);
+        }
+        rawDestructor(ptr);
+        return rv;
+      },
+      "toWireType": (destructors, o) => {
+        for (var fieldName in fields) {
+          if (!(fieldName in o)) {
+            throw new TypeError(`Missing field: "${fieldName}"`);
+          }
+        }
+        var ptr = rawConstructor();
+        for (fieldName in fields) {
+          fields[fieldName].write(ptr, o[fieldName]);
+        }
+        if (destructors !== null) {
+          destructors.push(rawDestructor, ptr);
+        }
+        return ptr;
+      },
+      "argPackAdvance": GenericWireTypeSize,
+      "readValueFromPointer": readPointer,
+      destructorFunction: rawDestructor
+    } ];
+  });
+};
+
+function __embind_register_bigint(primitiveType, name, size, minRange, maxRange) {
+  primitiveType >>>= 0;
+  name >>>= 0;
+  size >>>= 0;
+}
+
+var embind_init_charCodes = () => {
+  var codes = new Array(256);
+  for (var i = 0; i < 256; ++i) {
+    codes[i] = String.fromCharCode(i);
+  }
+  embind_charCodes = codes;
+};
+
+var embind_charCodes;
+
+var readLatin1String = ptr => {
+  var ret = "";
+  var c = ptr;
+  while (GROWABLE_HEAP_U8()[c >>> 0]) {
+    ret += embind_charCodes[GROWABLE_HEAP_U8()[c++ >>> 0]];
+  }
+  return ret;
+};
+
+var BindingError;
+
+var throwBindingError = message => {
+  throw new BindingError(message);
 };
 
 /** @param {Object=} options */ function sharedRegisterType(rawType, registeredInstance, options = {}) {
@@ -1712,10 +1785,6 @@ var Emval = {
   }
 };
 
-/** @suppress {globalThis} */ function readPointer(pointer) {
-  return this["fromWireType"](GROWABLE_HEAP_U32()[((pointer) >>> 2) >>> 0]);
-}
-
 var EmValType = {
   name: "emscripten::val",
   "fromWireType": handle => {
@@ -1781,14 +1850,6 @@ var __embind_register_float = function(rawType, name, size) {
 var createNamedFunction = (name, body) => Object.defineProperty(body, "name", {
   value: name
 });
-
-var runDestructors = destructors => {
-  while (destructors.length) {
-    var ptr = destructors.pop();
-    var del = destructors.pop();
-    del(ptr);
-  }
-};
 
 function usesDestructorStack(argTypes) {
   for (var i = 1; i < argTypes.length; ++i) {
@@ -2418,6 +2479,43 @@ var __embind_register_std_wstring = function(rawType, charSize, name) {
   });
 };
 
+function __embind_register_value_object(rawType, name, constructorSignature, rawConstructor, destructorSignature, rawDestructor) {
+  rawType >>>= 0;
+  name >>>= 0;
+  constructorSignature >>>= 0;
+  rawConstructor >>>= 0;
+  destructorSignature >>>= 0;
+  rawDestructor >>>= 0;
+  structRegistrations[rawType] = {
+    name: readLatin1String(name),
+    rawConstructor: embind__requireFunction(constructorSignature, rawConstructor),
+    rawDestructor: embind__requireFunction(destructorSignature, rawDestructor),
+    fields: []
+  };
+}
+
+function __embind_register_value_object_field(structType, fieldName, getterReturnType, getterSignature, getter, getterContext, setterArgumentType, setterSignature, setter, setterContext) {
+  structType >>>= 0;
+  fieldName >>>= 0;
+  getterReturnType >>>= 0;
+  getterSignature >>>= 0;
+  getter >>>= 0;
+  getterContext >>>= 0;
+  setterArgumentType >>>= 0;
+  setterSignature >>>= 0;
+  setter >>>= 0;
+  setterContext >>>= 0;
+  structRegistrations[structType].fields.push({
+    fieldName: readLatin1String(fieldName),
+    getterReturnType: getterReturnType,
+    getter: embind__requireFunction(getterSignature, getter),
+    getterContext: getterContext,
+    setterArgumentType: setterArgumentType,
+    setter: embind__requireFunction(setterSignature, setter),
+    setterContext: setterContext
+  });
+}
+
 var __embind_register_void = function(rawType, name) {
   rawType >>>= 0;
   name >>>= 0;
@@ -2982,19 +3080,19 @@ function _fd_write(fd, iov, iovcnt, pnum) {
 
 PThread.init();
 
+InternalError = Module["InternalError"] = class InternalError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "InternalError";
+  }
+};
+
 embind_init_charCodes();
 
 BindingError = Module["BindingError"] = class BindingError extends Error {
   constructor(message) {
     super(message);
     this.name = "BindingError";
-  }
-};
-
-InternalError = Module["InternalError"] = class InternalError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "InternalError";
   }
 };
 
@@ -3014,6 +3112,7 @@ function assignWasmImports() {
     /** @export */ __cxa_throw: ___cxa_throw,
     /** @export */ __pthread_create_js: ___pthread_create_js,
     /** @export */ _abort_js: __abort_js,
+    /** @export */ _embind_finalize_value_object: __embind_finalize_value_object,
     /** @export */ _embind_register_bigint: __embind_register_bigint,
     /** @export */ _embind_register_bool: __embind_register_bool,
     /** @export */ _embind_register_emval: __embind_register_emval,
@@ -3023,6 +3122,8 @@ function assignWasmImports() {
     /** @export */ _embind_register_memory_view: __embind_register_memory_view,
     /** @export */ _embind_register_std_string: __embind_register_std_string,
     /** @export */ _embind_register_std_wstring: __embind_register_std_wstring,
+    /** @export */ _embind_register_value_object: __embind_register_value_object,
+    /** @export */ _embind_register_value_object_field: __embind_register_value_object_field,
     /** @export */ _embind_register_void: __embind_register_void,
     /** @export */ _emscripten_get_now_is_monotonic: __emscripten_get_now_is_monotonic,
     /** @export */ _emscripten_init_main_thread_js: __emscripten_init_main_thread_js,
