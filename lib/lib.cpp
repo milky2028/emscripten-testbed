@@ -13,6 +13,18 @@ struct Stuff {
   int s3;
 };
 
+void takes_val(emscripten::val some_string) {
+  printf("val string: %s\n", some_string.as<std::string>().c_str());
+}
+
+void takes_val_ref(const emscripten::val& some_string) {
+  printf("val string: %s\n", some_string.as<std::string>().c_str());
+}
+
+void takes_val_move(const emscripten::val&& some_string) {
+  printf("val string: %s\n", some_string.as<std::string>().c_str());
+}
+
 void takes_class_const_ref(const Stuff& stuff) {
   printf("log stuff: %s\n", stuff.s1.c_str());
 }
@@ -80,4 +92,7 @@ EMSCRIPTEN_BINDINGS(module) {
   emscripten::function("fn_takes_string", &fn_takes_string);
   emscripten::function("fn_takes_const_string_ref", &fn_takes_const_string_ref);
   emscripten::function("takes_class_const_ref", &takes_class_const_ref);
+  emscripten::function("takes_val", &takes_val);
+  emscripten::function("takes_val_ref", &takes_val_ref);
+  emscripten::function("takes_val_move", &takes_val_move);
 }
