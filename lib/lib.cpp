@@ -7,6 +7,28 @@
 #include <emscripten/threading.h>
 #include <future>
 
+struct Stuff {
+  std::string s1;
+  int s2;
+  int s3;
+};
+
+void takes_class(Stuff stuff) {
+  printf("log stuff: %s\n", stuff.s1.c_str());
+}
+
+void takes_class_const_ref(const Stuff& stuff) {
+  printf("log stuff: %s\n", stuff.s1.c_str());
+}
+
+void fn_takes_string(std::string message) {
+  printf("log string: %s\n", message.c_str());
+}
+
+void fn_takes_const_string_ref(const std::string& message) {
+  printf("log string: %s\n", message.c_str());
+}
+
 std::string get_stored_string(const emscripten::val& storage, const std::string& key) {
   auto result = storage.call<emscripten::val>("getItem", key);
   if (result == emscripten::val::null()) {
@@ -56,4 +78,8 @@ void get_from_thread() {
 EMSCRIPTEN_BINDINGS(module) {
   emscripten::function("get_from_main_thread", &get_from_main_thread);
   emscripten::function("get_from_thread", &get_from_thread);
+  emscripten::function("fn_takes_string", &fn_takes_string);
+  emscripten::function("fn_takes_const_string_ref", &fn_takes_const_string_ref);
+  emscripten::function("takes_class", &takes_class);
+  emscripten::function("takes_class_const_ref", &takes_class_const_ref);
 }
