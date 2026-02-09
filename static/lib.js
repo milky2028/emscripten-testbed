@@ -400,6 +400,476 @@ function removeRunDependency(id) {
   throw e;
 }
 
+var emscriptenMemoryProfiler = {
+  detailedHeapUsage: true,
+  trackedCallstackMinSizeBytes: (typeof (new Error).stack == "undefined") ? Infinity : 16 * 1024 * 1024,
+  trackedCallstackMinAllocCount: (typeof (new Error).stack == "undefined") ? Infinity : 1e4,
+  hookStackAlloc: true,
+  uiUpdateIntervalMsecs: 2e3,
+  allocationsAtLoc: {},
+  allocationSitePtrs: {},
+  sizeOfAllocatedPtr: {},
+  sizeOfPreRunAllocatedPtr: {},
+  resizeMemorySources: [],
+  sbrkSources: [],
+  pagePreRunIsFinished: false,
+  totalMemoryAllocated: 0,
+  totalTimesMallocCalled: 0,
+  totalTimesFreeCalled: 0,
+  stackTopWatermark: Infinity,
+  canvas: null,
+  drawContext: null,
+  truncDec(f = 0) {
+    var str = f.toFixed(2);
+    if (str.includes(".00", str.length - 3)) return str.substr(0, str.length - 3); else if (str.includes("0", str.length - 1)) return str.substr(0, str.length - 1); else return str;
+  },
+  formatBytes(bytes) {
+    if (bytes >= 1e3 * 1024 * 1024) return emscriptenMemoryProfiler.truncDec(bytes / (1024 * 1024 * 1024)) + " GB"; else if (bytes >= 1e3 * 1024) return emscriptenMemoryProfiler.truncDec(bytes / (1024 * 1024)) + " MB"; else if (bytes >= 1e3) return emscriptenMemoryProfiler.truncDec(bytes / 1024) + " KB"; else return emscriptenMemoryProfiler.truncDec(bytes) + " B";
+  },
+  hsvToRgb(h, s, v) {
+    var h_i = (h * 6) | 0;
+    var f = h * 6 - h_i;
+    var p = v * (1 - s);
+    var q = v * (1 - f * s);
+    var t = v * (1 - (1 - f) * s);
+    var r, g, b;
+    switch (h_i) {
+     case 0:
+      r = v;
+      g = t;
+      b = p;
+      break;
+
+     case 1:
+      r = q;
+      g = v;
+      b = p;
+      break;
+
+     case 2:
+      r = p;
+      g = v;
+      b = t;
+      break;
+
+     case 3:
+      r = p;
+      g = q;
+      b = v;
+      break;
+
+     case 4:
+      r = t;
+      g = p;
+      b = v;
+      break;
+
+     case 5:
+      r = v;
+      g = p;
+      b = q;
+      break;
+    }
+    function toHex(v) {
+      v = (v * 255 | 0).toString(16);
+      return (v.length == 1) ? "0" + v : v;
+    }
+    return "#" + toHex(r) + toHex(g) + toHex(b);
+  },
+  onSbrkGrow(oldLimit, newLimit) {
+    var self = emscriptenMemoryProfiler;
+    if (self.sbrkSources.length == 0) {
+      self.sbrkSources.push({
+        stack: "initial heap sbrk limit<br>",
+        begin: 0,
+        end: oldLimit,
+        color: self.hsvToRgb(self.sbrkSources.length * .618033988749895 % 1, .5, .95)
+      });
+    }
+    if (newLimit <= oldLimit) return;
+    self.sbrkSources.push({
+      stack: self.filterCallstackForHeapResize((new Error).stack.toString()),
+      begin: oldLimit,
+      end: newLimit,
+      color: self.hsvToRgb(self.sbrkSources.length * .618033988749895 % 1, .5, .95)
+    });
+  },
+  onMemoryResize(oldSize, newSize) {
+    var self = emscriptenMemoryProfiler;
+    if (self.resizeMemorySources.length == 0) {
+      self.resizeMemorySources.push({
+        stack: "initial heap size<br>",
+        begin: 0,
+        end: oldSize,
+        color: self.resizeMemorySources.length % 2 ? "#ff00ff" : "#ff80ff"
+      });
+    }
+    if (newSize <= oldSize) return;
+    self.resizeMemorySources.push({
+      stack: self.filterCallstackForHeapResize((new Error).stack.toString()),
+      begin: oldSize,
+      end: newSize,
+      color: self.resizeMemorySources.length % 2 ? "#ff00ff" : "#ff80ff"
+    });
+    console.log("memory resize: " + oldSize + " " + newSize);
+  },
+  recordStackWatermark() {
+    if (typeof runtimeInitialized == "undefined" || runtimeInitialized) {
+      var self = emscriptenMemoryProfiler;
+      self.stackTopWatermark = Math.min(self.stackTopWatermark, _emscripten_stack_get_current());
+    }
+  },
+  onMalloc(ptr, size) {
+    if (!ptr) return;
+    if (emscriptenMemoryProfiler.sizeOfAllocatedPtr[ptr]) {
+      return;
+    }
+    var self = emscriptenMemoryProfiler;
+    self.totalMemoryAllocated += size;
+    ++self.totalTimesMallocCalled;
+    self.recordStackWatermark();
+    self.sizeOfAllocatedPtr[ptr] = size;
+    if (!self.pagePreRunIsFinished) self.sizeOfPreRunAllocatedPtr[ptr] = size;
+    var loc = (new Error).stack.toString();
+    self.allocationsAtLoc[loc] ||= [ 0, 0, self.filterCallstackForMalloc(loc) ];
+    self.allocationsAtLoc[loc][0] += 1;
+    self.allocationsAtLoc[loc][1] += size;
+    self.allocationSitePtrs[ptr] = loc;
+  },
+  onFree(ptr) {
+    if (!ptr) return;
+    var self = emscriptenMemoryProfiler;
+    var sz = self.sizeOfAllocatedPtr[ptr];
+    if (!isNaN(sz)) self.totalMemoryAllocated -= sz; else {
+      return;
+    }
+    self.recordStackWatermark();
+    var loc = self.allocationSitePtrs[ptr];
+    if (loc) {
+      var allocsAtThisLoc = self.allocationsAtLoc[loc];
+      if (allocsAtThisLoc) {
+        allocsAtThisLoc[0] -= 1;
+        allocsAtThisLoc[1] -= sz;
+        if (allocsAtThisLoc[0] <= 0) delete self.allocationsAtLoc[loc];
+      }
+    }
+    delete self.allocationSitePtrs[ptr];
+    delete self.sizeOfAllocatedPtr[ptr];
+    delete self.sizeOfPreRunAllocatedPtr[ptr];
+    ++self.totalTimesFreeCalled;
+  },
+  onRealloc(oldAddress, newAddress, size) {
+    emscriptenMemoryProfiler.onFree(oldAddress);
+    emscriptenMemoryProfiler.onMalloc(newAddress, size);
+  },
+  onPreloadComplete() {
+    emscriptenMemoryProfiler.pagePreRunIsFinished = true;
+  },
+  initialize() {
+    Module["onMalloc"] = (ptr, size) => emscriptenMemoryProfiler.onMalloc(ptr, size);
+    Module["onRealloc"] = (oldAddress, newAddress, size) => emscriptenMemoryProfiler.onRealloc(oldAddress, newAddress, size);
+    Module["onFree"] = ptr => emscriptenMemoryProfiler.onFree(ptr);
+    emscriptenMemoryProfiler.recordStackWatermark();
+    Module["preRun"] ||= [];
+    Module["preRun"].push(emscriptenMemoryProfiler.onPreloadComplete);
+    if (emscriptenMemoryProfiler.hookStackAlloc && typeof stackAlloc == "function") {
+      var prevStackAlloc = stackAlloc;
+      var hookedStackAlloc = size => {
+        var ptr = prevStackAlloc(size);
+        emscriptenMemoryProfiler.recordStackWatermark();
+        return ptr;
+      };
+      stackAlloc = hookedStackAlloc;
+    }
+    if (location.search.toLowerCase().includes("trackbytes=")) {
+      emscriptenMemoryProfiler.trackedCallstackMinSizeBytes = parseInt(location.search.substr(location.search.toLowerCase().indexOf("trackbytes=") + "trackbytes=".length), undefined);
+    }
+    /* https://github.com/google/closure-compiler/issues/3230 / https://github.com/google/closure-compiler/issues/3548 */ if (location.search.toLowerCase().includes("trackcount=")) {
+      emscriptenMemoryProfiler.trackedCallstackMinAllocCount = parseInt(location.search.substr(location.search.toLowerCase().indexOf("trackcount=") + "trackcount=".length), undefined);
+    }
+    emscriptenMemoryProfiler.memoryprofiler_summary = document.getElementById("memoryprofiler_summary");
+    var div;
+    if (!emscriptenMemoryProfiler.memoryprofiler_summary) {
+      div = document.createElement("div");
+      div.innerHTML = "<div style='border: 2px solid black; padding: 2px;'><canvas style='border: 1px solid black; margin-left: auto; margin-right: auto; display: block;' id='memoryprofiler_canvas' width='100%' height='50'></canvas><input type='checkbox' id='showHeapResizes' onclick='emscriptenMemoryProfiler.updateUi()'>Display heap and sbrk() resizes. Filter sbrk() and heap resize callstacks by keywords: <input type='text' id='sbrkFilter'>(reopen page with ?sbrkFilter=foo,bar query params to prepopulate this list)<br/>Track all allocation sites larger than <input id='memoryprofiler_min_tracked_alloc_size' type=number value=" + emscriptenMemoryProfiler.trackedCallstackMinSizeBytes + "></input> bytes, and all allocation sites with more than <input id='memoryprofiler_min_tracked_alloc_count' type=number value=" + emscriptenMemoryProfiler.trackedCallstackMinAllocCount + "></input> outstanding allocations. (visit this page via URL query params foo.html?trackbytes=1000&trackcount=100 to apply custom thresholds starting from page load)<br/><div id='memoryprofiler_summary'></div><input id='memoryprofiler_clear_alloc_stats' type='button' value='Clear alloc stats' ></input><br />Sort allocations by:<select id='memoryProfilerSort'><option value='bytes'>Bytes</option><option value='count'>Count</option><option value='fixed'>Fixed</option></select><div id='memoryprofiler_ptrs'></div>";
+    }
+    var populateHtmlBody = function() {
+      if (div) {
+        document.body.appendChild(div);
+        function getValueOfParam(key) {
+          var results = (new RegExp("[\\?&]" + key + "=([^&#]*)")).exec(location.href);
+          return results ? results[1] : "";
+        }
+        if (document.getElementById("sbrkFilter").value = getValueOfParam("sbrkFilter")) {
+          document.getElementById("showHeapResizes").checked = true;
+        }
+      }
+      var self = emscriptenMemoryProfiler;
+      self.memoryprofiler_summary = document.getElementById("memoryprofiler_summary");
+      self.memoryprofiler_ptrs = document.getElementById("memoryprofiler_ptrs");
+      document.getElementById("memoryprofiler_min_tracked_alloc_size").addEventListener("change", function(e) {
+        self.trackedCallstackMinSizeBytes = parseInt(this.value, undefined);
+      });
+      /* https://github.com/google/closure-compiler/issues/3230 / https://github.com/google/closure-compiler/issues/3548 */ document.getElementById("memoryprofiler_min_tracked_alloc_count").addEventListener("change", function(e) {
+        self.trackedCallstackMinAllocCount = parseInt(this.value, undefined);
+      });
+      document.getElementById("memoryprofiler_clear_alloc_stats").addEventListener("click", e => {
+        self.allocationsAtLoc = {};
+        self.allocationSitePtrs = {};
+      });
+      self.canvas = document.getElementById("memoryprofiler_canvas");
+      self.canvas.width = document.documentElement.clientWidth - 32;
+      self.drawContext = self.canvas.getContext("2d");
+      self.updateUi();
+      setInterval(() => emscriptenMemoryProfiler.updateUi(), self.uiUpdateIntervalMsecs);
+    };
+    if (document.body) populateHtmlBody(); else setTimeout(populateHtmlBody, 1e3);
+  },
+  bytesToPixelsRoundedDown(bytes) {
+    return (bytes * emscriptenMemoryProfiler.canvas.width * emscriptenMemoryProfiler.canvas.height / GROWABLE_HEAP_I8().length) | 0;
+  },
+  bytesToPixelsRoundedUp(bytes) {
+    return ((bytes * emscriptenMemoryProfiler.canvas.width * emscriptenMemoryProfiler.canvas.height + GROWABLE_HEAP_I8().length - 1) / GROWABLE_HEAP_I8().length) | 0;
+  },
+  fillLine(startBytes, endBytes) {
+    var self = emscriptenMemoryProfiler;
+    var startPixels = self.bytesToPixelsRoundedDown(startBytes);
+    var endPixels = self.bytesToPixelsRoundedUp(endBytes);
+    var x0 = (startPixels / self.canvas.height) | 0;
+    var y0 = startPixels - x0 * self.canvas.height;
+    var x1 = (endPixels / self.canvas.height) | 0;
+    var y1 = endPixels - x1 * self.canvas.height;
+    if (y0 > 0 && x0 < x1) {
+      self.drawContext.fillRect(x0, y0, 1, self.canvas.height - y0);
+      y0 = 0;
+      ++x0;
+    }
+    if (y1 < self.canvas.height && x0 < x1) {
+      self.drawContext.fillRect(x1, 0, 1, y1);
+      y1 = self.canvas.height - 1;
+      --x1;
+    }
+    self.drawContext.fillRect(x0, 0, x1 - x0 + 1, self.canvas.height);
+  },
+  fillRect(startBytes, endBytes, heightPercentage) {
+    var self = emscriptenMemoryProfiler;
+    var startPixels = self.bytesToPixelsRoundedDown(startBytes);
+    var endPixels = self.bytesToPixelsRoundedUp(endBytes);
+    var x0 = (startPixels / self.canvas.height) | 0;
+    var x1 = (endPixels / self.canvas.height) | 0;
+    self.drawContext.fillRect(x0, self.canvas.height * (1 - heightPercentage), x1 - x0 + 1, self.canvas.height);
+  },
+  countOpenALAudioDataSize() {
+    if (typeof AL == "undefined" || !AL.currentContext) return 0;
+    var totalMemory = 0;
+    for (var i in AL.currentContext.buf) {
+      var buffer = AL.currentContext.buf[i];
+      for (var channel = 0; channel < buffer.numberOfChannels; ++channel) totalMemory += buffer.getChannelData(channel).length * 4;
+    }
+    return totalMemory;
+  },
+  printAllocsWithCyclingColors(colors, allocs) {
+    var colorIndex = 0;
+    for (var i in allocs) {
+      emscriptenMemoryProfiler.drawContext.fillStyle = colors[colorIndex];
+      colorIndex = (colorIndex + 1) % colors.length;
+      var start = i | 0;
+      var sz = allocs[start] | 0;
+      emscriptenMemoryProfiler.fillLine(start, start + sz);
+    }
+  },
+  filterURLsFromCallstack(callstack) {
+    callstack = callstack.replace(/@((file)|(http))[\w:\/\.]*\/([\w\.]*)/g, "@$4");
+    callstack = callstack.replace(/\n/g, "<br />");
+    return callstack;
+  },
+  filterCallstackAfterFunctionName(callstack, func) {
+    var i = callstack.indexOf(func);
+    if (i != -1) {
+      var end = callstack.indexOf("<br />", i);
+      if (end != -1) {
+        return callstack.substr(0, end);
+      }
+    }
+    return callstack;
+  },
+  filterCallstackForMalloc(callstack) {
+    var i = callstack.indexOf("emscripten_trace_record_");
+    if (i != -1) {
+      callstack = callstack.substr(callstack.indexOf("\n", i) + 1);
+    }
+    return emscriptenMemoryProfiler.filterURLsFromCallstack(callstack);
+  },
+  filterCallstackForHeapResize(callstack) {
+    var i = callstack.indexOf("emscripten_asm_const_iii");
+    var j = callstack.indexOf("growMemory");
+    i = (i == -1) ? j : (j == -1 ? i : Math.min(i, j));
+    if (i != -1) {
+      callstack = callstack.substr(callstack.indexOf("\n", i) + 1);
+    }
+    callstack = callstack.replace(/(wasm-function\[\d+\]):0x[0-9a-f]+/g, "$1");
+    return emscriptenMemoryProfiler.filterURLsFromCallstack(callstack);
+  },
+  printHeapResizeLog(heapResizes) {
+    var html = "";
+    for (var i = 0; i < heapResizes.length; ++i) {
+      var j = i + 1;
+      while (j < heapResizes.length) {
+        if ((heapResizes[j].filteredStack || heapResizes[j].stack) == (heapResizes[i].filteredStack || heapResizes[i].stack)) {
+          ++j;
+        } else {
+          break;
+        }
+      }
+      var resizeFirst = heapResizes[i];
+      var resizeLast = heapResizes[j - 1];
+      var count = j - i;
+      html += '<div style="background-color: ' + resizeFirst.color + '"><b>' + resizeFirst.begin + "-" + resizeLast.end + " (" + count + " times, " + emscriptenMemoryProfiler.formatBytes(resizeLast.end - resizeFirst.begin) + ")</b>:" + (resizeFirst.filteredStack || resizeFirst.stack) + "</div><br>";
+      i = j - 1;
+    }
+    return html;
+  },
+  updateUi() {
+    if (document.body.style.overflow != "") document.body.style.overflow = "";
+    function colorBar(color) {
+      return '<span style="padding:0px; border:solid 1px black; width:28px;height:14px; vertical-align:middle; display:inline-block; background-color:' + color + ';"></span>';
+    }
+    function nBits(n) {
+      var i = 0;
+      while (n >= 1) {
+        ++i;
+        n /= 2;
+      }
+      return i;
+    }
+    function toHex(i, width) {
+      var str = i.toString(16);
+      while (str.length < width) str = "0" + str;
+      return "0x" + str;
+    }
+    var self = emscriptenMemoryProfiler;
+    if (self.canvas.width != document.documentElement.clientWidth - 32) {
+      self.canvas.width = document.documentElement.clientWidth - 32;
+    }
+    if (typeof runtimeInitialized != "undefined" && !runtimeInitialized) {
+      return;
+    }
+    var stackBase = _emscripten_stack_get_base();
+    var stackMax = _emscripten_stack_get_end();
+    var stackCurrent = _emscripten_stack_get_current();
+    var width = (nBits(GROWABLE_HEAP_I8().length) + 3) / 4;
+    var html = "Total HEAP size: " + self.formatBytes(GROWABLE_HEAP_I8().length) + ".";
+    html += "<br />" + colorBar("#202020") + "STATIC memory area size: " + self.formatBytes(stackMax - 1024);
+    html += ". 1024: " + toHex(1024, width);
+    html += "<br />" + colorBar("#FF8080") + "STACK memory area size: " + self.formatBytes(stackBase - stackMax);
+    html += ". STACK_BASE: " + toHex(stackBase, width);
+    html += ". STACKTOP: " + toHex(stackCurrent, width);
+    html += ". STACK_MAX: " + toHex(stackMax, width) + ".";
+    html += "<br />STACK memory area used now (should be zero): " + self.formatBytes(stackBase - stackCurrent) + "." + colorBar("#FFFF00") + " STACK watermark highest seen usage (approximate lower-bound!): " + self.formatBytes(stackBase - self.stackTopWatermark);
+    var heap_base = Module["___heap_base"];
+    var heap_end = _sbrk();
+    html += "<br />DYNAMIC memory area size: " + self.formatBytes(heap_end - heap_base);
+    html += ". start: " + toHex(heap_base, width);
+    html += ". end: " + toHex(heap_end, width) + ".";
+    html += "<br />" + colorBar("#6699CC") + colorBar("#003366") + colorBar("#0000FF") + "DYNAMIC memory area used: " + self.formatBytes(self.totalMemoryAllocated) + " (" + (self.totalMemoryAllocated * 100 / (GROWABLE_HEAP_I8().length - heap_base)).toFixed(2) + "% of all dynamic memory and unallocated heap)";
+    html += "<br />Free memory: " + colorBar("#70FF70") + "DYNAMIC: " + self.formatBytes(heap_end - heap_base - self.totalMemoryAllocated) + ", " + colorBar("#FFFFFF") + "Unallocated HEAP: " + self.formatBytes(GROWABLE_HEAP_I8().length - heap_end) + " (" + ((GROWABLE_HEAP_I8().length - heap_base - self.totalMemoryAllocated) * 100 / (GROWABLE_HEAP_I8().length - heap_base)).toFixed(2) + "% of all dynamic memory and unallocated heap)";
+    var preloadedMemoryUsed = 0;
+    for (var i in self.sizeOfPreRunAllocatedPtr) preloadedMemoryUsed += self.sizeOfPreRunAllocatedPtr[i] | 0;
+    html += "<br />" + colorBar("#FF9900") + colorBar("#FFDD33") + "Preloaded memory used, most likely memory reserved by files in the virtual filesystem : " + self.formatBytes(preloadedMemoryUsed);
+    html += "<br />OpenAL audio data: " + self.formatBytes(self.countOpenALAudioDataSize()) + " (outside HEAP)";
+    html += "<br /># of total malloc()s/free()s performed in app lifetime: " + self.totalTimesMallocCalled + "/" + self.totalTimesFreeCalled + " (currently alive pointers: " + (self.totalTimesMallocCalled - self.totalTimesFreeCalled) + ")";
+    self.drawContext.fillStyle = "#FFFFFF";
+    self.drawContext.fillRect(0, 0, self.canvas.width, self.canvas.height);
+    self.drawContext.fillStyle = "#FF8080";
+    self.fillLine(stackMax, stackBase);
+    self.drawContext.fillStyle = "#FFFF00";
+    self.fillLine(self.stackTopWatermark, stackBase);
+    self.drawContext.fillStyle = "#FF0000";
+    self.fillLine(stackCurrent, stackBase);
+    self.drawContext.fillStyle = "#70FF70";
+    self.fillLine(heap_base, heap_end);
+    if (self.detailedHeapUsage) {
+      self.printAllocsWithCyclingColors([ "#6699CC", "#003366", "#0000FF" ], self.sizeOfAllocatedPtr);
+      self.printAllocsWithCyclingColors([ "#FF9900", "#FFDD33" ], self.sizeOfPreRunAllocatedPtr);
+    } else {
+      self.drawContext.fillStyle = "#0000FF";
+      self.fillLine(heap_base, heap_base + self.totalMemoryAllocated);
+    }
+    if (document.getElementById("showHeapResizes").checked) {
+      for (var i in self.resizeMemorySources) {
+        var resize = self.resizeMemorySources[i];
+        self.drawContext.fillStyle = resize.color;
+        self.fillRect(resize.begin, resize.end, .5);
+      }
+      var uniqueSources = {};
+      var filterWords = document.getElementById("sbrkFilter").value.split(",");
+      for (var i in self.sbrkSources) {
+        var sbrk = self.sbrkSources[i];
+        var stack = sbrk.stack;
+        for (var j in filterWords) {
+          var s = filterWords[j].trim();
+          if (s.length > 0) stack = self.filterCallstackAfterFunctionName(stack, s);
+        }
+        sbrk.filteredStack = stack;
+        uniqueSources[stack] ||= self.hsvToRgb(Object.keys(uniqueSources).length * .618033988749895 % 1, .5, .95);
+        self.drawContext.fillStyle = sbrk.color = uniqueSources[stack];
+        self.fillRect(sbrk.begin, sbrk.end, .25);
+      }
+      function line(x0, y0, x1, y1) {
+        self.drawContext.beginPath();
+        self.drawContext.moveTo(x0, y0);
+        self.drawContext.lineTo(x1, y1);
+        self.drawContext.lineWidth = 2;
+        self.drawContext.stroke();
+      }
+      if (self.sbrkSources.length > 0) line(0, .75 * self.canvas.height, self.canvas.width, .75 * self.canvas.height);
+      if (self.resizeMemorySources.length > 0) line(0, .5 * self.canvas.height, self.canvas.width, .5 * self.canvas.height);
+    }
+    self.memoryprofiler_summary.innerHTML = html;
+    var sort = document.getElementById("memoryProfilerSort");
+    var sortOrder = sort.options[sort.selectedIndex].value;
+    html = "";
+    if (document.getElementById("showHeapResizes").checked) {
+      html += '<div style="background-color: #c0c0c0"><h4>Heap resize locations:</h4>';
+      html += self.printHeapResizeLog(self.resizeMemorySources);
+      html += "</div>";
+      html += '<div style="background-color: #c0c0ff"><h4>Memory sbrk() locations:</h4>';
+      html += self.printHeapResizeLog(self.sbrkSources);
+      html += "</div>";
+    } else {
+      if (Object.keys(self.allocationsAtLoc).length > 0) {
+        var calls = [];
+        for (var i in self.allocationsAtLoc) {
+          if (self.allocationsAtLoc[i][0] >= self.trackedCallstackMinAllocCount || self.allocationsAtLoc[i][1] >= self.trackedCallstackMinSizeBytes) {
+            calls.push(self.allocationsAtLoc[i]);
+          }
+        }
+        if (calls.length > 0) {
+          if (sortOrder != "fixed") {
+            var sortIdx = (sortOrder == "count") ? 0 : 1;
+            calls.sort((a, b) => b[sortIdx] - a[sortIdx]);
+          }
+          html += "<h4>Allocation sites with more than " + self.formatBytes(self.trackedCallstackMinSizeBytes) + " of accumulated allocations, or more than " + self.trackedCallstackMinAllocCount + " simultaneously outstanding allocations:</h4>";
+          for (var i in calls) {
+            html += "<b>" + self.formatBytes(calls[i][1]) + "/" + calls[i][0] + " allocs</b>: " + calls[i][2] + "<br />";
+          }
+        }
+      }
+    }
+    self.memoryprofiler_ptrs.innerHTML = html;
+  }
+};
+
+function memoryprofiler_add_hooks() {
+  emscriptenMemoryProfiler.initialize();
+}
+
+if (typeof document != "undefined" && typeof window != "undefined" && typeof process == "undefined") {
+  emscriptenMemoryProfiler.initialize();
+}
+
+globalThis.emscriptenMemoryProfiler = emscriptenMemoryProfiler;
+
 var dataURIPrefix = "data:application/octet-stream;base64,";
 
 /**
@@ -1420,11 +1890,13 @@ function createJsInvoker(argTypes, isClassMethodFunc, returns, isAsync) {
     argsListWired += (i !== 0 ? ", " : "") + "arg" + i + "Wired";
   }
   var invokerFnBody = `\n        return function (${argsList}) {\n        if (arguments.length !== ${argCount - 2}) {\n          throwBindingError('function ' + humanName + ' called with ' + arguments.length + ' arguments, expected ${argCount - 2}');\n        }`;
+  invokerFnBody += `Module.emscripten_trace_enter_context('embind::' + humanName );\n`;
   if (needsDestructorStack) {
     invokerFnBody += "var destructors = [];\n";
   }
   var dtorStack = needsDestructorStack ? "destructors" : "null";
   var args1 = [ "humanName", "throwBindingError", "invoker", "fn", "runDestructors", "retType", "classParam" ];
+  args1.push("Module");
   if (isClassMethodFunc) {
     invokerFnBody += "var thisWired = classParam['toWireType'](" + dtorStack + ", this);\n";
   }
@@ -1449,8 +1921,10 @@ function createJsInvoker(argTypes, isClassMethodFunc, returns, isAsync) {
     }
   }
   if (returns) {
-    invokerFnBody += "var ret = retType['fromWireType'](rv);\n" + "return ret;\n";
-  } else {}
+    invokerFnBody += "var ret = retType['fromWireType'](rv);\n" + "Module.emscripten_trace_exit_context();\n" + "return ret;\n";
+  } else {
+    invokerFnBody += "Module.emscripten_trace_exit_context();\n";
+  }
   invokerFnBody += "}\n";
   return [ args1, invokerFnBody ];
 }
@@ -1464,6 +1938,7 @@ function craftInvokerFunction(humanName, argTypes, classType, cppInvokerFunc, cp
   var needsDestructorStack = usesDestructorStack(argTypes);
   var returns = (argTypes[0].name !== "void");
   var closureArgs = [ humanName, throwBindingError, cppInvokerFunc, cppTargetFunc, runDestructors, argTypes[0], argTypes[1] ];
+  closureArgs.push(Module);
   for (var i = 0; i < argCount - 2; ++i) {
     closureArgs.push(argTypes[i + 2]);
   }
@@ -2182,6 +2657,18 @@ function __emval_as(handle, returnType, destructorsRef) {
   return emval_returnValue(returnType, destructorsRef, handle);
 }
 
+var emval_methodCallers = [];
+
+function __emval_call(caller, handle, destructorsRef, args) {
+  caller >>>= 0;
+  handle >>>= 0;
+  destructorsRef >>>= 0;
+  args >>>= 0;
+  caller = emval_methodCallers[caller];
+  handle = Emval.toValue(handle);
+  return caller(null, handle, destructorsRef, args);
+}
+
 var emval_symbols = {};
 
 var getStringOrSymbol = address => {
@@ -2191,8 +2678,6 @@ var getStringOrSymbol = address => {
   }
   return symbol;
 };
-
-var emval_methodCallers = [];
 
 function __emval_call_method(caller, objHandle, methodName, destructorsRef, args) {
   caller >>>= 0;
@@ -2320,9 +2805,13 @@ var getHeapMax = () => 4294901760;
 var growMemory = size => {
   var b = wasmMemory.buffer;
   var pages = (size - b.byteLength + 65535) / 65536;
+  var oldHeapSize = b.byteLength;
   try {
     wasmMemory.grow(pages);
     updateMemoryViews();
+    if (typeof emscriptenMemoryProfiler != "undefined") {
+      emscriptenMemoryProfiler.onMemoryResize(oldHeapSize, b.byteLength);
+    }
     return 1;
   } /*success*/ catch (e) {}
 };
@@ -2333,6 +2822,7 @@ function _emscripten_resize_heap(requestedSize) {
   if (requestedSize <= oldSize) {
     return false;
   }
+  _emscripten_trace_report_memory_layout();
   var maxHeapSize = getHeapMax();
   if (requestedSize > maxHeapSize) {
     return false;
@@ -2344,11 +2834,215 @@ function _emscripten_resize_heap(requestedSize) {
     var newSize = Math.min(maxHeapSize, alignUp(Math.max(requestedSize, overGrownHeapSize), 65536));
     var replacement = growMemory(newSize);
     if (replacement) {
+      traceLogMessage("Emscripten", `Enlarging memory arrays from ${oldSize} to ${newSize}`);
+      _emscripten_trace_report_memory_layout();
       return true;
     }
   }
   return false;
 }
+
+var traceConfigure = (collector_url, application) => {
+  EmscriptenTrace.configure(collector_url, application);
+};
+
+var _emscripten_trace_configure_for_google_wtf = () => {
+  EmscriptenTrace.configureForGoogleWTF();
+};
+
+var traceEnterContext = name => {
+  if (EmscriptenTrace.postEnabled) {
+    var now = EmscriptenTrace.now();
+    EmscriptenTrace.post([ EmscriptenTrace.EVENT_ENTER_CONTEXT, now, name ]);
+  }
+  if (EmscriptenTrace.googleWTFEnabled) {
+    EmscriptenTrace.googleWTFEnterScope(name);
+  }
+};
+
+var _emscripten_trace_exit_context = () => {
+  if (EmscriptenTrace.postEnabled) {
+    var now = EmscriptenTrace.now();
+    EmscriptenTrace.post([ EmscriptenTrace.EVENT_EXIT_CONTEXT, now ]);
+  }
+  if (EmscriptenTrace.googleWTFEnabled) {
+    EmscriptenTrace.googleWTFExitScope();
+  }
+};
+
+var traceLogMessage = (channel, message) => {
+  if (EmscriptenTrace.postEnabled) {
+    var now = EmscriptenTrace.now();
+    EmscriptenTrace.post([ EmscriptenTrace.EVENT_LOG_MESSAGE, now, channel, message ]);
+  }
+};
+
+var traceMark = message => {
+  if (EmscriptenTrace.postEnabled) {
+    var now = EmscriptenTrace.now();
+    EmscriptenTrace.post([ EmscriptenTrace.EVENT_LOG_MESSAGE, now, "MARK", message ]);
+  }
+  if (EmscriptenTrace.googleWTFEnabled) {
+    window["wtf"].trace.mark(message);
+  }
+};
+
+var EmscriptenTrace = {
+  worker: null,
+  collectorEnabled: false,
+  googleWTFEnabled: false,
+  testingEnabled: false,
+  googleWTFData: {
+    scopeStack: [],
+    cachedScopes: {}
+  },
+  DATA_VERSION: 1,
+  EVENT_ALLOCATE: "allocate",
+  EVENT_ANNOTATE_TYPE: "annotate-type",
+  EVENT_APPLICATION_NAME: "application-name",
+  EVENT_ASSOCIATE_STORAGE_SIZE: "associate-storage-size",
+  EVENT_ENTER_CONTEXT: "enter-context",
+  EVENT_EXIT_CONTEXT: "exit-context",
+  EVENT_FRAME_END: "frame-end",
+  EVENT_FRAME_RATE: "frame-rate",
+  EVENT_FRAME_START: "frame-start",
+  EVENT_FREE: "free",
+  EVENT_LOG_MESSAGE: "log-message",
+  EVENT_MEMORY_LAYOUT: "memory-layout",
+  EVENT_OFF_HEAP: "off-heap",
+  EVENT_REALLOCATE: "reallocate",
+  EVENT_REPORT_ERROR: "report-error",
+  EVENT_SESSION_NAME: "session-name",
+  EVENT_TASK_ASSOCIATE_DATA: "task-associate-data",
+  EVENT_TASK_END: "task-end",
+  EVENT_TASK_RESUME: "task-resume",
+  EVENT_TASK_START: "task-start",
+  EVENT_TASK_SUSPEND: "task-suspend",
+  EVENT_USER_NAME: "user-name",
+  init: () => {
+    Module["emscripten_trace_configure"] = traceConfigure;
+    Module["emscripten_trace_configure_for_google_wtf"] = _emscripten_trace_configure_for_google_wtf;
+    Module["emscripten_trace_enter_context"] = traceEnterContext;
+    Module["emscripten_trace_exit_context"] = _emscripten_trace_exit_context;
+    Module["emscripten_trace_log_message"] = traceLogMessage;
+    Module["emscripten_trace_mark"] = traceMark;
+  },
+  loadWorkerViaXHR: (url, ready, scope) => {
+    var req = new XMLHttpRequest;
+    req.addEventListener("load", function() {
+      var blob = new Blob([ this.responseText ], {
+        type: "text/javascript"
+      });
+      var worker = new Worker(window.URL.createObjectURL(blob));
+      ready?.call(scope, worker);
+    }, req);
+    req.open("get", url, false);
+    req.send();
+  },
+  configure: (collector_url, application) => {
+    EmscriptenTrace.now = _emscripten_get_now;
+    var now = new Date;
+    var session_id = now.getTime().toString() + "_" + Math.floor((Math.random() * 100) + 1).toString();
+    EmscriptenTrace.loadWorkerViaXHR(collector_url + "worker.js", function(worker) {
+      EmscriptenTrace.worker = worker;
+      EmscriptenTrace.worker.addEventListener("error", function(e) {
+        out("TRACE WORKER ERROR:");
+        out(e);
+      }, false);
+      EmscriptenTrace.worker.postMessage({
+        "cmd": "configure",
+        "data_version": EmscriptenTrace.DATA_VERSION,
+        "session_id": session_id,
+        "url": collector_url
+      });
+      EmscriptenTrace.configured = true;
+      EmscriptenTrace.collectorEnabled = true;
+      EmscriptenTrace.postEnabled = true;
+    });
+    EmscriptenTrace.post([ EmscriptenTrace.EVENT_APPLICATION_NAME, application ]);
+    EmscriptenTrace.post([ EmscriptenTrace.EVENT_SESSION_NAME, now.toISOString() ]);
+  },
+  configureForTest: () => {
+    EmscriptenTrace.postEnabled = true;
+    EmscriptenTrace.testingEnabled = true;
+    EmscriptenTrace.now = function() {
+      return 0;
+    };
+  },
+  configureForGoogleWTF: () => {
+    if (window && window["wtf"]) {
+      EmscriptenTrace.googleWTFEnabled = true;
+    } else {
+      out("GOOGLE WTF NOT AVAILABLE TO ENABLE");
+    }
+  },
+  post: entry => {
+    if (EmscriptenTrace.postEnabled && EmscriptenTrace.collectorEnabled) {
+      EmscriptenTrace.worker.postMessage({
+        "cmd": "post",
+        "entry": entry
+      });
+    } else if (EmscriptenTrace.postEnabled && EmscriptenTrace.testingEnabled) {
+      out("Tracing " + entry);
+    }
+  },
+  googleWTFEnterScope: name => {
+    var scopeEvent = EmscriptenTrace.googleWTFData["cachedScopes"][name];
+    if (!scopeEvent) {
+      scopeEvent = window["wtf"].trace.events.createScope(name);
+      EmscriptenTrace.googleWTFData["cachedScopes"][name] = scopeEvent;
+    }
+    var scope = scopeEvent();
+    EmscriptenTrace.googleWTFData["scopeStack"].push(scope);
+  },
+  googleWTFExitScope: () => {
+    var scope = EmscriptenTrace.googleWTFData["scopeStack"].pop();
+    window["wtf"].trace.leaveScope(scope);
+  }
+};
+
+function _emscripten_trace_record_allocation(address, size) {
+  address >>>= 0;
+  if (typeof Module["onMalloc"] == "function") Module["onMalloc"](address, size);
+  if (EmscriptenTrace.postEnabled) {
+    var now = EmscriptenTrace.now();
+    EmscriptenTrace.post([ EmscriptenTrace.EVENT_ALLOCATE, now, address, size ]);
+  }
+}
+
+function _emscripten_trace_record_free(address) {
+  address >>>= 0;
+  if (typeof Module["onFree"] == "function") Module["onFree"](address);
+  if (EmscriptenTrace.postEnabled) {
+    var now = EmscriptenTrace.now();
+    EmscriptenTrace.post([ EmscriptenTrace.EVENT_FREE, now, address ]);
+  }
+}
+
+function _emscripten_trace_record_reallocation(old_address, new_address, size) {
+  old_address >>>= 0;
+  new_address >>>= 0;
+  if (typeof Module["onRealloc"] == "function") Module["onRealloc"](old_address, new_address, size);
+  if (EmscriptenTrace.postEnabled) {
+    var now = EmscriptenTrace.now();
+    EmscriptenTrace.post([ EmscriptenTrace.EVENT_REALLOCATE, now, old_address, new_address, size ]);
+  }
+}
+
+var _emscripten_trace_report_memory_layout = () => {
+  if (EmscriptenTrace.postEnabled) {
+    var memory_layout = {
+      "static_base": 1024,
+      "stack_base": _emscripten_stack_get_base(),
+      "stack_top": _emscripten_stack_get_current(),
+      "stack_max": _emscripten_stack_get_end(),
+      "dynamic_top": _sbrk(0),
+      "total_memory": GROWABLE_HEAP_I8().length
+    };
+    var now = EmscriptenTrace.now();
+    EmscriptenTrace.post([ EmscriptenTrace.EVENT_MEMORY_LAYOUT, now, memory_layout ]);
+  }
+};
 
 var printCharBuffers = [ null, [], [] ];
 
@@ -2416,6 +3110,8 @@ init_emval();
 
 UnboundTypeError = Module["UnboundTypeError"] = extendError(Error, "UnboundTypeError");
 
+EmscriptenTrace.init();
+
 var proxiedFunctionTable = [ _proc_exit, exitOnMainThread, pthreadCreateProxied, _fd_write ];
 
 var wasmImports;
@@ -2447,6 +3143,7 @@ function assignWasmImports() {
     /** @export */ _emscripten_thread_mailbox_await: __emscripten_thread_mailbox_await,
     /** @export */ _emscripten_thread_set_strongref: __emscripten_thread_set_strongref,
     /** @export */ _emval_as: __emval_as,
+    /** @export */ _emval_call: __emval_call,
     /** @export */ _emval_call_method: __emval_call_method,
     /** @export */ _emval_decref: __emval_decref,
     /** @export */ _emval_equals: __emval_equals,
@@ -2458,6 +3155,9 @@ function assignWasmImports() {
     /** @export */ emscripten_exit_with_live_runtime: _emscripten_exit_with_live_runtime,
     /** @export */ emscripten_get_now: _emscripten_get_now,
     /** @export */ emscripten_resize_heap: _emscripten_resize_heap,
+    /** @export */ emscripten_trace_record_allocation: _emscripten_trace_record_allocation,
+    /** @export */ emscripten_trace_record_free: _emscripten_trace_record_free,
+    /** @export */ emscripten_trace_record_reallocation: _emscripten_trace_record_reallocation,
     /** @export */ exit: _exit,
     /** @export */ fd_write: _fd_write,
     /** @export */ memory: wasmMemory
@@ -2490,9 +3190,15 @@ var __emscripten_run_on_main_thread_js = (a0, a1, a2, a3, a4) => (__emscripten_r
 
 var _free = Module["_free"] = a0 => (_free = Module["_free"] = wasmExports["free"])(a0);
 
+var _emscripten_stack_get_base = () => (_emscripten_stack_get_base = wasmExports["emscripten_stack_get_base"])();
+
+var _emscripten_stack_get_end = () => (_emscripten_stack_get_end = wasmExports["emscripten_stack_get_end"])();
+
 var __emscripten_thread_free_data = a0 => (__emscripten_thread_free_data = wasmExports["_emscripten_thread_free_data"])(a0);
 
 var __emscripten_thread_exit = a0 => (__emscripten_thread_exit = wasmExports["_emscripten_thread_exit"])(a0);
+
+var _sbrk = a0 => (_sbrk = wasmExports["sbrk"])(a0);
 
 var __emscripten_check_mailbox = () => (__emscripten_check_mailbox = wasmExports["_emscripten_check_mailbox"])();
 
@@ -2508,14 +3214,20 @@ var ___cxa_is_pointer_type = a0 => (___cxa_is_pointer_type = wasmExports["__cxa_
 
 var dynCall_jiji = Module["dynCall_jiji"] = (a0, a1, a2, a3, a4) => (dynCall_jiji = Module["dynCall_jiji"] = wasmExports["dynCall_jiji"])(a0, a1, a2, a3, a4);
 
+var ___heap_base = Module["___heap_base"] = 74864;
+
 function applySignatureConversions(wasmExports) {
   wasmExports = Object.assign({}, wasmExports);
   var makeWrapper_pp = f => a0 => f(a0) >>> 0;
   var makeWrapper_p = f => () => f() >>> 0;
+  var makeWrapper_pP = f => a0 => f(a0) >>> 0;
   wasmExports["__getTypeName"] = makeWrapper_pp(wasmExports["__getTypeName"]);
   wasmExports["pthread_self"] = makeWrapper_p(wasmExports["pthread_self"]);
   wasmExports["malloc"] = makeWrapper_pp(wasmExports["malloc"]);
   wasmExports["emscripten_main_runtime_thread_id"] = makeWrapper_p(wasmExports["emscripten_main_runtime_thread_id"]);
+  wasmExports["emscripten_stack_get_base"] = makeWrapper_p(wasmExports["emscripten_stack_get_base"]);
+  wasmExports["emscripten_stack_get_end"] = makeWrapper_p(wasmExports["emscripten_stack_get_end"]);
+  wasmExports["sbrk"] = makeWrapper_pP(wasmExports["sbrk"]);
   wasmExports["_emscripten_stack_alloc"] = makeWrapper_pp(wasmExports["_emscripten_stack_alloc"]);
   wasmExports["emscripten_stack_get_current"] = makeWrapper_p(wasmExports["emscripten_stack_get_current"]);
   return wasmExports;

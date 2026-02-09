@@ -16,4 +16,5 @@ emcc \
 -std=c++20 \
 -lembind \
 ./lib/lib.cpp \
+--emit-tsd lib.d.ts \
 -o ./static/lib.js

@@ -11,11 +11,11 @@
 			// const worker = new Worker('/worker.js', { type: 'module' });
 
 			const module = await import('/lib.js').then(({ default: init }) => init());
-			
-			debugger
-			module.takes_val("bacon");
+
+			module.takes_val('bacon');
 			module.get_from_main_thread();
 			module.get_from_thread();
+			console.log(module.convert_map());
 		</script>
 	</body>
 </html>
